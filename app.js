@@ -1,6 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createWork } from './work.js';
+import { createDecks } from './decksui.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $app = document.getElementById('app');
@@ -109,7 +110,7 @@ const NAV = [
   ['campaigns', 'Καμπάνιες', '✦'],
   ['calendar', 'Ημερολόγιο', '▦'],
   ['tasks', 'Tasks', '☑'],
-  ['decks', 'Παρουσιάσεις', '▶', true, true],
+  ['decks', 'Παρουσιάσεις', '▶', true],
   ['sep'],
   ['team', 'Ομάδα', '◉', true],
   ['settings', 'Ρυθμίσεις', '⚙', true],
@@ -142,14 +143,15 @@ function shell(route, content) {
 async function router() {
   if (!state.user) return;
   const [, route = 'dashboard', id, sub] = location.hash.split('/');
-  const adminOnly = ['leads', 'team', 'offers', 'settings'];
+  const adminOnly = ['leads', 'team', 'offers', 'settings', 'decks'];
   if (adminOnly.includes(route) && !isAdmin()) return (location.hash = '#/dashboard');
   try {
     if (route === 'clients' && id) return await viewClient(id);
     if (route === 'offers' && id && sub === 'pdf') return await viewOfferPrint(id);
     if (route === 'offers' && id) return await viewOffer(id);
     if (route === 'campaigns' && id) return await viewCampaign(id);
-    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam, offers: viewOffers, settings: viewSettings, campaigns: viewCampaigns, tasks: viewTasks, calendar: viewCalendar };
+    if (route === 'decks' && id) return await decks().viewDeck(id);
+    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam, offers: viewOffers, settings: viewSettings, campaigns: viewCampaigns, tasks: viewTasks, calendar: viewCalendar, decks: () => decks().viewDecks() };
     await (views[route] || viewDashboard)();
   } catch (e) { console.error(e); }
 }
@@ -162,6 +164,8 @@ function viewCampaigns() { return work().viewCampaigns(); }
 function viewCampaign(id) { return work().viewCampaign(id); }
 function viewTasks() { return work().viewTasks(); }
 function viewCalendar() { return work().viewCalendar(); }
+let DK;
+const decks = () => (DK ??= createDecks({ sb, esc, q, toast, shell, openModal, closeModal, options, formData, date, getSettings }));
 
 // ---------------------------------------------------------------- dashboard
 async function viewDashboard() {
@@ -489,9 +493,13 @@ async function viewSettings() {
           <div class="row2"><label>Email<input name="email" value="${esc(s.email)}"></label>
             <label>Τηλέφωνο<input name="phone" value="${esc(s.phone)}"></label></div>
           <div class="row2"><label>Website<input name="website" value="${esc(s.website)}"></label>
-            <label>Χρώμα brand<input name="accent" type="color" value="${esc(s.accent || '#ff5a1f')}" style="height:40px;padding:4px"></label></div>
+            <label>Χρώμα brand<input name="accent" type="color" value="${esc(s.accent || '#FCB040')}" style="height:40px;padding:4px"></label></div>
           <div class="row2"><label>ΦΠΑ προεπιλογή (%)<input name="default_vat" type="number" step="0.01" value="${esc(s.default_vat ?? 24)}"></label>
             <label>Ισχύς προσφοράς (ημέρες)<input name="validity_days" type="number" value="${esc(s.validity_days ?? 30)}"></label></div>
+          <div class="row2"><label>Γραμματοσειρά παρουσιάσεων<input name="deck_font" value="${esc(s.deck_font || 'Gotham Greek')}"></label>
+            <label>Instagram (link)<input name="instagram" value="${esc(s.instagram)}" placeholder="https://instagram.com/…"></label></div>
+          <div class="row2"><label>Facebook (link)<input name="facebook" value="${esc(s.facebook)}" placeholder="https://facebook.com/…"></label>
+            <label>LinkedIn (link)<input name="linkedin" value="${esc(s.linkedin)}" placeholder="https://linkedin.com/company/…"></label></div>
           <label>Όροι προσφοράς (προεπιλογή)<textarea name="default_terms" rows="6">${esc(s.default_terms)}</textarea></label>
           <label>Logo
             <div style="display:flex;gap:12px;align-items:center">
@@ -499,6 +507,12 @@ async function viewSettings() {
               <input type="file" id="logo-file" accept="image/png,image/jpeg,image/svg+xml" style="width:auto;border:0;padding:0">
               ${logo ? '<button type="button" class="btn sm" id="logo-rm">Αφαίρεση</button>' : ''}
             </div></label>
+          <label>Λευκό logo (για τα μαύρα slides των παρουσιάσεων)
+            <div style="display:flex;gap:12px;align-items:center">
+              <div id="logo2-prev" style="width:140px;height:56px;border-radius:8px;display:grid;place-items:center;background:#000;overflow:hidden">${s.logo_light ? `<img src="${s.logo_light}" style="max-width:100%;max-height:100%">` : '<img src="assets/logo-white.png" style="max-width:90%;max-height:60%;opacity:.9">'}</div>
+              <input type="file" id="logo2-file" accept="image/png,image/jpeg,image/svg+xml" style="width:auto;border:0;padding:0">
+            </div></label>
+          <p class="muted" style="font-size:13px;margin:0">Αν δεν ανεβάσεις logo, οι παρουσιάσεις χρησιμοποιούν το «created.» από τα αρχεία σου.</p>
           <div><button class="btn primary">Αποθήκευση</button></div>
         </form>
       </div>
@@ -514,10 +528,16 @@ async function viewSettings() {
     logo = await imageToDataUrl(f);
     main.querySelector('#logo-prev').innerHTML = `<img src="${logo}" style="max-width:100%;max-height:100%">`;
   };
+  let logoLight = s.logo_light;
+  main.querySelector('#logo2-file').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    logoLight = await imageToDataUrl(f);
+    main.querySelector('#logo2-prev').innerHTML = `<img src="${logoLight}" style="max-width:100%;max-height:100%">`;
+  };
   main.querySelector('#logo-rm')?.addEventListener('click', () => { logo = null; main.querySelector('#logo-prev').innerHTML = '<small class="muted">χωρίς logo</small>'; });
   main.querySelector('#company').onsubmit = async (e) => {
     e.preventDefault();
-    await q(sb.from('company_settings').update({ ...formData(e.target), logo, updated_at: new Date().toISOString() }).eq('id', 1));
+    await q(sb.from('company_settings').update({ ...formData(e.target), logo, logo_light: logoLight, updated_at: new Date().toISOString() }).eq('id', 1));
     toast('Τα στοιχεία αποθηκεύτηκαν');
   };
   main.querySelector('#add-svc').onclick = () => serviceForm();
@@ -643,7 +663,7 @@ async function viewOffer(id) {
     <div class="head"><div><a href="#/offers" class="muted" style="font-size:14px;text-decoration:none">← Προσφορές</a>
       <h1>${isNew ? 'Νέα προσφορά' : esc(o.number)}</h1>${isNew ? '' : `<div class="sub"><span class="pill ${o.status}">${OFFER_STATUS[o.status]}</span></div>`}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        ${isNew ? '' : '<button class="btn" id="dup">Αντίγραφο</button><button class="btn" id="pdf">PDF</button>'}
+        ${isNew ? '' : '<button class="btn" id="dup">Αντίγραφο</button><button class="btn" id="deck">Παρουσίαση</button><button class="btn" id="pdf">PDF</button>'}
         <button class="btn primary" id="save">Αποθήκευση</button></div></div>
     <form id="of" class="grid two" onsubmit="return false">
       <div class="grid" style="align-content:start">
@@ -752,6 +772,12 @@ async function viewOffer(id) {
     if (isNew) location.hash = `#/offers/${oid}`; else viewOffer(oid);
   };
   main.querySelector('#pdf')?.addEventListener('click', async () => { const oid = await save(); if (oid) location.hash = `#/offers/${oid}/pdf`; });
+  main.querySelector('#deck')?.addEventListener('click', async () => {
+    const oid = await save(); if (!oid) return;
+    const existing = (await q(sb.from('decks').select('id').eq('offer_id', oid)))[0];
+    if (existing && confirm('Υπάρχει ήδη παρουσίαση για αυτή την προσφορά. Να ανοίξει αυτή; (Άκυρο = νέα)')) { location.hash = `#/decks/${existing.id}`; return; }
+    await decks().createFromOffer(oid);
+  });
   main.querySelector('#dup')?.addEventListener('click', async () => {
     const oid = await save(); if (!oid) return;
     const copy = { ...formData(form), status: 'draft', issue_date: today(), valid_until: addDays(today(), settings.validity_days ?? 30), number: await nextOfferNumber(), title: form.title.value + ' (αντίγραφο)' };
@@ -788,7 +814,7 @@ async function viewOfferPrint(id) {
     o.client_id ? q(sb.from('contacts').select('*').eq('client_id', o.client_id).order('created_at')) : [],
   ]);
   const t = offerTotals(items, o.discount_pct, o.vat_pct);
-  const accent = s.accent || '#ff5a1f';
+  const accent = s.accent || '#FCB040';
   const to = client ? client.name : (o.recipient || '');
   const attn = contacts?.[0];
   document.title = `${o.number} — ${o.title}`;
@@ -800,7 +826,7 @@ async function viewOfferPrint(id) {
     </div>
     <article class="doc" style="--doc-accent:${esc(accent)}">
       <header class="doc-head">
-        <div>${s.logo ? `<img src="${s.logo}" class="doc-logo" alt="">` : `<div class="doc-word">${esc(s.name || 'Created.')}</div>`}</div>
+        <div><img src="${s.logo || 'assets/logo-black.png'}" class="doc-logo" alt="${esc(s.name || 'Created.')}"></div>
         <div class="doc-co">
           ${s.legal_name ? `<b>${esc(s.legal_name)}</b><br>` : ''}
           ${s.address ? esc(s.address) + '<br>' : ''}
