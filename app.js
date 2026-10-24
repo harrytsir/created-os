@@ -35,6 +35,18 @@ const STAGES = [
   ['proposal', 'Προσφορά'], ['won', 'Κερδήθηκε'], ['lost', 'Χάθηκε'],
 ];
 const STAGE = Object.fromEntries(STAGES);
+const OFFER_STATUS = { draft: 'Πρόχειρη', sent: 'Στάλθηκε', accepted: 'Εγκρίθηκε', rejected: 'Απορρίφθηκε' };
+const num = (n) => new Intl.NumberFormat('el-GR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n || 0));
+const eur = (n) => num(n) + ' €';
+const today = () => new Date().toISOString().slice(0, 10);
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + Number(n || 0)); return x.toISOString().slice(0, 10); };
+function offerTotals(items, discountPct, vatPct) {
+  const subtotal = items.reduce((s, i) => s + Number(i.qty || 0) * Number(i.unit_price || 0), 0);
+  const discount = subtotal * Number(discountPct || 0) / 100;
+  const net = subtotal - discount;
+  const vat = net * Number(vatPct || 0) / 100;
+  return { subtotal, discount, net, vat, total: net + vat };
+}
 const options = (pairs, sel) => pairs.map(([v, l]) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${esc(l)}</option>`).join('');
 
 // ---------------------------------------------------------------- modal
@@ -92,15 +104,17 @@ const NAV = [
   ['clients', 'Πελάτες', '◧'],
   ['leads', 'Leads', '◇', true],
   ['sep'],
-  ['offers', 'Προσφορές', '▤', true, true],
+  ['offers', 'Προσφορές', '▤', true],
   ['campaigns', 'Καμπάνιες', '✦', false, true],
   ['calendar', 'Ημερολόγιο', '▦', false, true],
   ['tasks', 'Tasks', '☑', false, true],
   ['decks', 'Παρουσιάσεις', '▶', true, true],
   ['sep'],
   ['team', 'Ομάδα', '◉', true],
+  ['settings', 'Ρυθμίσεις', '⚙', true],
 ];
 function shell(route, content) {
+  document.title = 'Created OS';
   const nav = NAV.filter((n) => n[0] === 'sep' || !n[3] || isAdmin()).map((n) => n[0] === 'sep'
     ? '<div class="sep"></div>'
     : `<a href="#/${n[0]}" class="${route === n[0] ? 'active' : ''} ${n[4] ? 'soon' : ''}"><span>${n[2]}</span>${n[1]}${n[4] ? '<span class="tag">σύντομα</span>' : ''}</a>`).join('');
@@ -126,12 +140,14 @@ function shell(route, content) {
 // ---------------------------------------------------------------- router
 async function router() {
   if (!state.user) return;
-  const [, route = 'dashboard', id] = location.hash.split('/');
-  const adminOnly = ['leads', 'team'];
+  const [, route = 'dashboard', id, sub] = location.hash.split('/');
+  const adminOnly = ['leads', 'team', 'offers', 'settings'];
   if (adminOnly.includes(route) && !isAdmin()) return (location.hash = '#/dashboard');
   try {
     if (route === 'clients' && id) return await viewClient(id);
-    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam };
+    if (route === 'offers' && id && sub === 'pdf') return await viewOfferPrint(id);
+    if (route === 'offers' && id) return await viewOffer(id);
+    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam, offers: viewOffers, settings: viewSettings };
     await (views[route] || viewDashboard)();
   } catch (e) { console.error(e); }
 }
@@ -142,6 +158,7 @@ async function viewDashboard() {
   const main = shell('dashboard', '<div class="empty">Φόρτωση…</div>');
   const clients = await q(sb.from('clients').select('id,name,status,created_at').order('created_at', { ascending: false }));
   const leads = isAdmin() ? await q(sb.from('leads').select('id,title,company,stage,value,expected_close').order('created_at', { ascending: false })) : [];
+  const sentOffers = isAdmin() ? (await q(sb.from('offers').select('id,status'))).filter((o) => o.status === 'sent').length : 0;
   const open = leads.filter((l) => !['won', 'lost'].includes(l.stage));
   const pipeline = open.reduce((s, l) => s + Number(l.value || 0), 0);
   const won = leads.filter((l) => l.stage === 'won').reduce((s, l) => s + Number(l.value || 0), 0);
@@ -153,7 +170,8 @@ async function viewDashboard() {
       ${isAdmin() ? `
       <div class="card"><div class="num">${open.length}</div><div class="lbl">Ανοιχτά leads</div></div>
       <div class="card"><div class="num">${money(pipeline)}</div><div class="lbl">Αξία pipeline</div></div>
-      <div class="card"><div class="num">${money(won)}</div><div class="lbl">Κερδισμένα</div></div>` : ''}
+      <div class="card"><div class="num">${money(won)}</div><div class="lbl">Κερδισμένα</div></div>
+      <a class="card" href="#/offers" style="text-decoration:none"><div class="num">${sentOffers}</div><div class="lbl">Προσφορές σε αναμονή</div></a>` : ''}
     </div>
     <div class="grid ${isAdmin() ? 'two' : ''}">
       <div class="card"><h2>Πρόσφατοι πελάτες</h2>
@@ -236,11 +254,12 @@ async function viewClient(id) {
   const main = shell('clients', '<div class="empty">Φόρτωση…</div>');
   const c = await q(sb.from('clients').select('*').eq('id', id).maybeSingle());
   if (!c) { main.innerHTML = '<div class="empty">Ο πελάτης δεν βρέθηκε ή δεν έχεις πρόσβαση.</div>'; return; }
-  const [contacts, notes, profiles, members] = await Promise.all([
+  const [contacts, notes, profiles, members, offers] = await Promise.all([
     q(sb.from('contacts').select('*').eq('client_id', id).order('full_name')),
     q(sb.from('activities').select('*').eq('client_id', id).order('created_at', { ascending: false })),
     q(sb.from('profiles').select('id,full_name,email,role').order('full_name')),
     q(sb.from('client_members').select('user_id').eq('client_id', id)),
+    isAdmin() ? q(sb.from('offers').select('id,number,title,status,issue_date').eq('client_id', id).order('created_at', { ascending: false })) : [],
   ]);
   const who = Object.fromEntries(profiles.map((p) => [p.id, p.full_name]));
   const memberIds = new Set(members.map((m) => m.user_id));
@@ -273,6 +292,9 @@ async function viewClient(id) {
           ${contacts.map((p) => `<div class="list-row" ${isAdmin() ? `data-contact="${p.id}" style="cursor:pointer"` : ''}><span><b>${esc(p.full_name)}</b><br><small class="muted">${esc(p.role_title || '')}</small></span>
             <span style="text-align:right;font-size:13px">${p.email ? `<a href="mailto:${esc(p.email)}">${esc(p.email)}</a>` : ''}<br>${p.phone ? `<a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>` : ''}</span></div>`).join('') || '<div class="empty">Καμία επαφή.</div>'}
         </div>
+        ${isAdmin() ? `<div class="card"><div class="head" style="margin-bottom:6px"><h2 style="margin:0">Προσφορές</h2><button class="btn sm" id="add-offer">+ Προσφορά</button></div>
+          ${offers.map((o) => `<a class="list-row" href="#/offers/${o.id}" style="text-decoration:none"><span><b>${esc(o.title)}</b><br><small class="muted">${esc(o.number)} · ${date(o.issue_date)}</small></span><span class="pill ${o.status}">${OFFER_STATUS[o.status]}</span></a>`).join('') || '<div class="empty" style="padding:16px">Καμία προσφορά.</div>'}
+        </div>` : ''}
         ${isAdmin() ? `<div class="card"><h2>Ομάδα πελάτη</h2><p class="sub" style="margin-top:-6px">Συνεργάτες με πρόσβαση σε αυτόν τον πελάτη</p>
           ${collaborators.map((p) => `<label style="display:flex;gap:10px;align-items:center;color:var(--ink);font-size:14px;padding:6px 0"><input type="checkbox" style="width:auto" data-member="${p.id}" ${memberIds.has(p.id) ? 'checked' : ''}> ${esc(p.full_name)} <small class="muted">${esc(p.email)}</small></label>`).join('') || '<div class="muted" style="font-size:14px">Δεν υπάρχουν ακόμα συνεργάτες. Στείλε τους το link της εφαρμογής να κάνουν εγγραφή.</div>'}
         </div>` : ''}
@@ -281,6 +303,7 @@ async function viewClient(id) {
 
   main.querySelector('#edit')?.addEventListener('click', () => clientForm(c));
   main.querySelector('#add-contact')?.addEventListener('click', () => contactForm(id));
+  main.querySelector('#add-offer')?.addEventListener('click', () => { state.offerPrefill = { client_id: id }; location.hash = '#/offers/new'; });
   main.querySelectorAll('[data-contact]').forEach((el) => (el.onclick = () => contactForm(id, contacts.find((x) => x.id === el.dataset.contact))));
   main.querySelector('#note-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -395,6 +418,7 @@ function leadForm(l = {}) {
         ${l.id ? '<button type="button" class="btn danger" id="del">Διαγραφή</button>' : ''}
         ${l.id && !l.client_id ? '<button type="button" class="btn" id="convert">→ Πελάτης</button>' : ''}
         ${l.client_id ? `<a class="btn ghost" href="#/clients/${l.client_id}">Δες πελάτη</a>` : ''}
+        ${l.id ? '<button type="button" class="btn" id="offer">+ Προσφορά</button>' : ''}
         <div class="right"><button type="button" class="btn" data-close>Άκυρο</button><button class="btn primary">Αποθήκευση</button></div>
       </div>
     </form>`, (m) => {
@@ -416,7 +440,386 @@ function leadForm(l = {}) {
       await q(sb.from('leads').delete().eq('id', l.id)); closeModal(); viewLeads();
     });
     m.querySelector('#convert')?.addEventListener('click', () => { closeModal(); convertLead(l); });
+    m.querySelector('#offer')?.addEventListener('click', () => {
+      closeModal();
+      state.offerPrefill = { lead_id: l.id, client_id: l.client_id, title: l.title, recipient: l.company || l.contact_name };
+      location.hash = '#/offers/new';
+    });
   });
+}
+
+// ---------------------------------------------------------------- settings & catalogue
+async function getSettings() {
+  let s = await q(sb.from('company_settings').select('*').eq('id', 1).maybeSingle());
+  if (!s) s = await q(sb.from('company_settings').insert({ id: 1 }).select().single());
+  return s;
+}
+
+async function viewSettings() {
+  const main = shell('settings', '<div class="empty">Φόρτωση…</div>');
+  const [s, services] = await Promise.all([getSettings(), q(sb.from('services').select('*').order('category'))]);
+  let logo = s.logo;
+  main.innerHTML = `
+    <div class="head"><div><h1>Ρυθμίσεις</h1><div class="sub">Στοιχεία εταιρείας για τις προσφορές και κατάλογος υπηρεσιών</div></div></div>
+    <div class="grid two">
+      <div class="card"><h2>Στοιχεία εταιρείας</h2>
+        <form class="form" id="company">
+          <div class="row2"><label>Εμπορικό όνομα<input name="name" value="${esc(s.name)}"></label>
+            <label>Επωνυμία (νόμιμη)<input name="legal_name" value="${esc(s.legal_name)}"></label></div>
+          <div class="row2"><label>ΑΦΜ<input name="vat_number" value="${esc(s.vat_number)}"></label>
+            <label>ΔΟΥ<input name="tax_office" value="${esc(s.tax_office)}"></label></div>
+          <label>Διεύθυνση<input name="address" value="${esc(s.address)}"></label>
+          <div class="row2"><label>Email<input name="email" value="${esc(s.email)}"></label>
+            <label>Τηλέφωνο<input name="phone" value="${esc(s.phone)}"></label></div>
+          <div class="row2"><label>Website<input name="website" value="${esc(s.website)}"></label>
+            <label>Χρώμα brand<input name="accent" type="color" value="${esc(s.accent || '#ff5a1f')}" style="height:40px;padding:4px"></label></div>
+          <div class="row2"><label>ΦΠΑ προεπιλογή (%)<input name="default_vat" type="number" step="0.01" value="${esc(s.default_vat ?? 24)}"></label>
+            <label>Ισχύς προσφοράς (ημέρες)<input name="validity_days" type="number" value="${esc(s.validity_days ?? 30)}"></label></div>
+          <label>Όροι προσφοράς (προεπιλογή)<textarea name="default_terms" rows="6">${esc(s.default_terms)}</textarea></label>
+          <label>Logo
+            <div style="display:flex;gap:12px;align-items:center">
+              <div id="logo-prev" style="width:140px;height:56px;border:1px dashed var(--line);border-radius:8px;display:grid;place-items:center;background:#fff;overflow:hidden">${logo ? `<img src="${logo}" style="max-width:100%;max-height:100%">` : '<small class="muted">χωρίς logo</small>'}</div>
+              <input type="file" id="logo-file" accept="image/png,image/jpeg,image/svg+xml" style="width:auto;border:0;padding:0">
+              ${logo ? '<button type="button" class="btn sm" id="logo-rm">Αφαίρεση</button>' : ''}
+            </div></label>
+          <div><button class="btn primary">Αποθήκευση</button></div>
+        </form>
+      </div>
+      <div class="card" style="align-self:start"><div class="head" style="margin-bottom:6px"><h2 style="margin:0">Κατάλογος υπηρεσιών</h2><button class="btn sm" id="add-svc">+ Υπηρεσία</button></div>
+        <p class="sub" style="margin-top:0">Αυτές εμφανίζονται για γρήγορη προσθήκη στις προσφορές.</p>
+        ${services.map((v) => `<div class="list-row" data-svc="${v.id}" style="cursor:pointer;${v.active ? '' : 'opacity:.5'}"><span><b>${esc(v.name)}</b><br><small class="muted">${esc(v.category || '')}${v.active ? '' : ' · ανενεργή'}</small></span>
+          <span style="text-align:right;white-space:nowrap">${eur(v.price)}<br><small class="muted">/ ${esc(v.unit || '')}</small></span></div>`).join('') || '<div class="empty">Ο κατάλογος είναι άδειος.</div>'}
+      </div>
+    </div>`;
+
+  main.querySelector('#logo-file').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    logo = await imageToDataUrl(f);
+    main.querySelector('#logo-prev').innerHTML = `<img src="${logo}" style="max-width:100%;max-height:100%">`;
+  };
+  main.querySelector('#logo-rm')?.addEventListener('click', () => { logo = null; main.querySelector('#logo-prev').innerHTML = '<small class="muted">χωρίς logo</small>'; });
+  main.querySelector('#company').onsubmit = async (e) => {
+    e.preventDefault();
+    await q(sb.from('company_settings').update({ ...formData(e.target), logo, updated_at: new Date().toISOString() }).eq('id', 1));
+    toast('Τα στοιχεία αποθηκεύτηκαν');
+  };
+  main.querySelector('#add-svc').onclick = () => serviceForm();
+  main.querySelectorAll('[data-svc]').forEach((el) => (el.onclick = () => serviceForm(services.find((v) => v.id === el.dataset.svc))));
+}
+
+function imageToDataUrl(file) {
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => {
+      if (file.type === 'image/svg+xml') return resolve(r.result);
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 600 / img.width);
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/png'));
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+
+function serviceForm(v = {}) {
+  const x = { unit: 'τεμ.', active: true, ...v };
+  openModal(`
+    <h2>${v.id ? 'Επεξεργασία υπηρεσίας' : 'Νέα υπηρεσία'}</h2>
+    <form class="form" id="f">
+      <div class="row2"><label>Όνομα *<input name="name" required value="${esc(x.name)}"></label>
+        <label>Κατηγορία<input name="category" value="${esc(x.category)}" placeholder="Social media, PR, Production…"></label></div>
+      <label>Περιγραφή<textarea name="description" rows="3">${esc(x.description)}</textarea></label>
+      <div class="row2"><label>Τιμή (€, χωρίς ΦΠΑ)<input name="price" type="number" step="0.01" min="0" value="${esc(x.price ?? 0)}"></label>
+        <label>Μονάδα<input name="unit" value="${esc(x.unit)}" placeholder="μήνας, ώρα, τεμ., project"></label></div>
+      <label style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" name="active" style="width:auto" ${x.active ? 'checked' : ''}> Ενεργή</label>
+      <div class="modal-actions">${v.id ? '<button type="button" class="btn danger" id="del">Διαγραφή</button>' : ''}
+        <div class="right"><button type="button" class="btn" data-close>Άκυρο</button><button class="btn primary">Αποθήκευση</button></div></div>
+    </form>`, (m) => {
+    m.querySelector('#f').onsubmit = async (e) => {
+      e.preventDefault();
+      const data = formData(e.target);
+      data.active = !!e.target.active.checked;
+      data.price = Number(data.price || 0);
+      if (v.id) await q(sb.from('services').update(data).eq('id', v.id));
+      else await q(sb.from('services').insert(data));
+      closeModal(); viewSettings();
+    };
+    m.querySelector('#del')?.addEventListener('click', async () => {
+      if (!confirm('Διαγραφή υπηρεσίας από τον κατάλογο; Οι παλιές προσφορές δεν επηρεάζονται.')) return;
+      await q(sb.from('services').delete().eq('id', v.id)); closeModal(); viewSettings();
+    });
+  });
+}
+
+// ---------------------------------------------------------------- offers
+async function viewOffers() {
+  const main = shell('offers', '<div class="empty">Φόρτωση…</div>');
+  const [offers, items, clients] = await Promise.all([
+    q(sb.from('offers').select('*').order('created_at', { ascending: false })),
+    q(sb.from('offer_items').select('offer_id,qty,unit_price')),
+    q(sb.from('clients').select('id,name')),
+  ]);
+  const cname = Object.fromEntries(clients.map((c) => [c.id, c.name]));
+  const totalOf = (o) => offerTotals(items.filter((i) => i.offer_id === o.id), o.discount_pct, o.vat_pct).net;
+  const pending = offers.filter((o) => o.status === 'sent');
+  main.innerHTML = `
+    <div class="head"><div><h1>Προσφορές</h1><div class="sub">${pending.length} σε αναμονή απάντησης · ${eur(pending.reduce((s, o) => s + totalOf(o), 0))} καθαρή αξία</div></div>
+      <a class="btn primary" href="#/offers/new">+ Νέα προσφορά</a></div>
+    <div class="toolbar">
+      <input class="search" id="q" placeholder="Αναζήτηση…">
+      <select id="st"><option value="">Όλες</option>${options(Object.entries(OFFER_STATUS))}</select>
+    </div>
+    <div class="card table-wrap" style="padding:0"><table>
+      <thead><tr><th>Αρ.</th><th>Τίτλος</th><th class="hide-sm">Πελάτης</th><th class="hide-sm">Ημ/νία</th><th style="text-align:right">Καθαρό</th><th>Κατάσταση</th></tr></thead>
+      <tbody id="rows"></tbody></table></div>`;
+  const draw = () => {
+    const term = main.querySelector('#q').value.toLowerCase();
+    const st = main.querySelector('#st').value;
+    const list = offers.filter((o) => (!st || o.status === st) && [o.number, o.title, cname[o.client_id], o.recipient].join(' ').toLowerCase().includes(term));
+    main.querySelector('#rows').innerHTML = list.map((o) => `
+      <tr data-id="${o.id}"><td class="muted" style="white-space:nowrap">${esc(o.number)}</td><td><b>${esc(o.title)}</b></td>
+      <td class="hide-sm">${esc(cname[o.client_id] || o.recipient || '—')}</td><td class="hide-sm" style="white-space:nowrap">${date(o.issue_date)}</td>
+      <td style="text-align:right;white-space:nowrap">${eur(totalOf(o))}</td><td><span class="pill ${o.status}">${OFFER_STATUS[o.status]}</span></td></tr>`).join('')
+      || `<tr><td colspan="6" class="empty">${offers.length ? 'Δεν βρέθηκαν αποτελέσματα.' : 'Φτιάξε την πρώτη σου προσφορά.'}</td></tr>`;
+    main.querySelectorAll('tr[data-id]').forEach((tr) => (tr.onclick = () => (location.hash = `#/offers/${tr.dataset.id}`)));
+  };
+  main.querySelector('#q').oninput = draw;
+  main.querySelector('#st').onchange = draw;
+  draw();
+}
+
+async function nextOfferNumber() {
+  const year = new Date().getFullYear();
+  const prefix = `CR-${year}-`;
+  const rows = await q(sb.from('offers').select('number'));
+  const max = rows.map((r) => r.number).filter((n) => n?.startsWith(prefix)).map((n) => parseInt(n.slice(prefix.length), 10) || 0).reduce((a, b) => Math.max(a, b), 0);
+  return prefix + String(max + 1).padStart(3, '0');
+}
+
+async function viewOffer(id) {
+  const main = shell('offers', '<div class="empty">Φόρτωση…</div>');
+  const isNew = id === 'new';
+  const [settings, services, clients, leads] = await Promise.all([
+    getSettings(),
+    q(sb.from('services').select('*').eq('active', true).order('category')),
+    q(sb.from('clients').select('id,name').order('name')),
+    q(sb.from('leads').select('id,title,company,stage,client_id').order('created_at', { ascending: false })),
+  ]);
+  let o, items;
+  if (isNew) {
+    const pre = state.offerPrefill || {}; state.offerPrefill = null;
+    o = { status: 'draft', issue_date: today(), valid_until: addDays(today(), settings.validity_days ?? 30), terms: settings.default_terms, vat_pct: settings.default_vat ?? 24, discount_pct: 0, ...pre };
+    items = [];
+  } else {
+    o = await q(sb.from('offers').select('*').eq('id', id).maybeSingle());
+    if (!o) { main.innerHTML = '<div class="empty">Η προσφορά δεν βρέθηκε.</div>'; return; }
+    items = await q(sb.from('offer_items').select('*').eq('offer_id', id).order('position'));
+  }
+  const cats = [...new Set(services.map((s) => s.category || 'Άλλα'))];
+
+  main.innerHTML = `
+    <div class="head"><div><a href="#/offers" class="muted" style="font-size:14px;text-decoration:none">← Προσφορές</a>
+      <h1>${isNew ? 'Νέα προσφορά' : esc(o.number)}</h1>${isNew ? '' : `<div class="sub"><span class="pill ${o.status}">${OFFER_STATUS[o.status]}</span></div>`}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${isNew ? '' : '<button class="btn" id="dup">Αντίγραφο</button><button class="btn" id="pdf">PDF</button>'}
+        <button class="btn primary" id="save">Αποθήκευση</button></div></div>
+    <form id="of" class="grid two" onsubmit="return false">
+      <div class="grid" style="align-content:start">
+        <div class="card form">
+          <label>Τίτλος προσφοράς *<input name="title" required value="${esc(o.title)}" placeholder="π.χ. Social media & content — Q1 2027"></label>
+          <div class="row2"><label>Πελάτης<select name="client_id"><option value="">— Χωρίς πελάτη —</option>${options(clients.map((c) => [c.id, c.name]), o.client_id)}</select></label>
+            <label>Ή παραλήπτης<input name="recipient" value="${esc(o.recipient)}" placeholder="Για υποψήφιο πελάτη"></label></div>
+          <label>Lead (προαιρετικά)<select name="lead_id"><option value="">—</option>${options(leads.map((l) => [l.id, l.title + (l.company ? ' · ' + l.company : '')]), o.lead_id)}</select></label>
+          <label>Εισαγωγικό κείμενο<textarea name="intro" rows="3" placeholder="Σας ευχαριστούμε για την εμπιστοσύνη. Με βάση τη συνάντησή μας…">${esc(o.intro)}</textarea></label>
+        </div>
+        <div class="card">
+          <div class="head" style="margin-bottom:10px"><h2 style="margin:0">Υπηρεσίες</h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <select id="from-cat" style="width:auto"><option value="">+ Από κατάλογο…</option>${cats.map((c) => `<optgroup label="${esc(c)}">${services.filter((s) => (s.category || 'Άλλα') === c).map((s) => `<option value="${s.id}">${esc(s.name)} · ${eur(s.price)}</option>`).join('')}</optgroup>`).join('')}</select>
+              <button type="button" class="btn sm" id="add-line">+ Ελεύθερη γραμμή</button></div></div>
+          <div id="lines"></div>
+        </div>
+        <div class="card form"><label>Όροι<textarea name="terms" rows="6">${esc(o.terms)}</textarea></label></div>
+      </div>
+      <div class="grid" style="align-content:start">
+        <div class="card form">
+          <label>Κατάσταση<select name="status">${options(Object.entries(OFFER_STATUS), o.status)}</select></label>
+          <div class="row2"><label>Ημ/νία έκδοσης<input type="date" name="issue_date" value="${esc(o.issue_date)}"></label>
+            <label>Ισχύει έως<input type="date" name="valid_until" value="${esc(o.valid_until)}"></label></div>
+          <div class="row2"><label>Έκπτωση (%)<input type="number" step="0.01" min="0" max="100" name="discount_pct" value="${esc(o.discount_pct)}"></label>
+            <label>ΦΠΑ (%)<input type="number" step="0.01" min="0" name="vat_pct" value="${esc(o.vat_pct)}"></label></div>
+        </div>
+        <div class="card" id="totals"></div>
+        ${isNew ? '' : '<button type="button" class="btn danger" id="del" style="justify-self:start">Διαγραφή προσφοράς</button>'}
+      </div>
+    </form>`;
+
+  const form = main.querySelector('#of');
+  const drawLines = () => {
+    main.querySelector('#lines').innerHTML = items.map((it, i) => `
+      <div class="line" data-i="${i}">
+        <div class="line-main">
+          <input data-k="name" value="${esc(it.name)}" placeholder="Υπηρεσία" class="line-name">
+          <textarea data-k="description" rows="1" placeholder="Περιγραφή (προαιρετικά)">${esc(it.description)}</textarea>
+        </div>
+        <div class="line-nums">
+          <label>Ποσ.<input data-k="qty" type="number" step="0.01" min="0" value="${esc(it.qty)}"></label>
+          <label>Μον.<input data-k="unit" value="${esc(it.unit)}"></label>
+          <label>Τιμή €<input data-k="unit_price" type="number" step="0.01" min="0" value="${esc(it.unit_price)}"></label>
+          <div class="line-total">${eur(Number(it.qty || 0) * Number(it.unit_price || 0))}</div>
+          <div class="line-tools"><button type="button" class="icon-btn sm" data-up title="Πάνω">↑</button><button type="button" class="icon-btn sm" data-rm title="Αφαίρεση">✕</button></div>
+        </div>
+      </div>`).join('') || '<div class="empty" style="padding:20px">Πρόσθεσε υπηρεσίες από τον κατάλογο ή ελεύθερες γραμμές.</div>';
+    main.querySelectorAll('.line').forEach((row) => {
+      const i = Number(row.dataset.i);
+      row.querySelectorAll('[data-k]').forEach((inp) => (inp.oninput = () => {
+        items[i][inp.dataset.k] = inp.value;
+        row.querySelector('.line-total').textContent = eur(Number(items[i].qty || 0) * Number(items[i].unit_price || 0));
+        drawTotals();
+      }));
+      row.querySelector('[data-rm]').onclick = () => { items.splice(i, 1); drawLines(); };
+      row.querySelector('[data-up]').onclick = () => { if (i > 0) { [items[i - 1], items[i]] = [items[i], items[i - 1]]; drawLines(); } };
+    });
+    drawTotals();
+  };
+  const drawTotals = () => {
+    const f = new FormData(form);
+    const t = offerTotals(items, f.get('discount_pct'), f.get('vat_pct'));
+    main.querySelector('#totals').innerHTML = `<h2>Σύνολα</h2><dl class="info totals">
+      <dt>Υποσύνολο</dt><dd>${eur(t.subtotal)}</dd>
+      ${t.discount ? `<dt>Έκπτωση ${num(f.get('discount_pct'))}%</dt><dd>−${eur(t.discount)}</dd>` : ''}
+      <dt>Καθαρό</dt><dd>${eur(t.net)}</dd>
+      <dt>ΦΠΑ ${num(f.get('vat_pct'))}%</dt><dd>${eur(t.vat)}</dd>
+      <dt><b>Σύνολο</b></dt><dd><b style="font-size:20px">${eur(t.total)}</b></dd></dl>`;
+  };
+  form.discount_pct.oninput = drawTotals;
+  form.vat_pct.oninput = drawTotals;
+  main.querySelector('#from-cat').onchange = (e) => {
+    const s = services.find((x) => x.id === e.target.value); e.target.value = '';
+    if (!s) return;
+    items.push({ name: s.name, description: s.description, unit: s.unit, qty: 1, unit_price: s.price });
+    drawLines();
+  };
+  main.querySelector('#add-line').onclick = () => { items.push({ name: '', description: '', unit: 'τεμ.', qty: 1, unit_price: 0 }); drawLines(); main.querySelector('.line:last-child .line-name')?.focus(); };
+  drawLines();
+
+  const save = async () => {
+    if (!form.title.value.trim()) { form.title.focus(); toast('Βάλε τίτλο στην προσφορά'); return null; }
+    const data = formData(form);
+    data.discount_pct = Number(data.discount_pct || 0);
+    data.vat_pct = Number(data.vat_pct || 0);
+    let offerId = o.id;
+    if (isNew || !offerId) {
+      data.number = await nextOfferNumber();
+      offerId = (await q(sb.from('offers').insert(data).select().single())).id;
+    } else {
+      await q(sb.from('offers').update(data).eq('id', offerId));
+      await q(sb.from('offer_items').delete().eq('offer_id', offerId));
+    }
+    const rows = items.filter((it) => (it.name || '').trim()).map((it, i) => ({
+      offer_id: offerId, position: i, name: it.name.trim(), description: it.description || null,
+      unit: it.unit || null, qty: Number(it.qty || 0), unit_price: Number(it.unit_price || 0),
+    }));
+    if (rows.length) await q(sb.from('offer_items').insert(rows));
+    await syncLead(data, o, offerTotals(rows, data.discount_pct, data.vat_pct).net, leads);
+    return offerId;
+  };
+  main.querySelector('#save').onclick = async () => {
+    const oid = await save(); if (!oid) return;
+    toast('Η προσφορά αποθηκεύτηκε');
+    if (isNew) location.hash = `#/offers/${oid}`; else viewOffer(oid);
+  };
+  main.querySelector('#pdf')?.addEventListener('click', async () => { const oid = await save(); if (oid) location.hash = `#/offers/${oid}/pdf`; });
+  main.querySelector('#dup')?.addEventListener('click', async () => {
+    const oid = await save(); if (!oid) return;
+    const copy = { ...formData(form), status: 'draft', issue_date: today(), valid_until: addDays(today(), settings.validity_days ?? 30), number: await nextOfferNumber(), title: form.title.value + ' (αντίγραφο)' };
+    copy.discount_pct = Number(copy.discount_pct || 0); copy.vat_pct = Number(copy.vat_pct || 0);
+    const n = await q(sb.from('offers').insert(copy).select().single());
+    const rows = items.filter((it) => (it.name || '').trim()).map((it, i) => ({ offer_id: n.id, position: i, name: it.name, description: it.description || null, unit: it.unit || null, qty: Number(it.qty || 0), unit_price: Number(it.unit_price || 0) }));
+    if (rows.length) await q(sb.from('offer_items').insert(rows));
+    toast('Δημιουργήθηκε αντίγραφο'); location.hash = `#/offers/${n.id}`;
+  });
+  main.querySelector('#del')?.addEventListener('click', async () => {
+    if (!confirm(`Διαγραφή της προσφοράς ${o.number};`)) return;
+    await q(sb.from('offers').delete().eq('id', o.id)); toast('Διαγράφηκε'); location.hash = '#/offers';
+  });
+}
+
+// Κρατάει το lead σε συγχρονισμό με την προσφορά.
+async function syncLead(data, before, net, leads) {
+  if (!data.lead_id) return;
+  const lead = leads.find((l) => l.id === data.lead_id); if (!lead) return;
+  const patch = {};
+  if (data.status === 'sent' && ['new', 'contacted', 'meeting'].includes(lead.stage)) patch.stage = 'proposal';
+  if (data.status === 'sent' || data.status === 'draft') patch.value = net;
+  if (data.status === 'accepted' && before.status !== 'accepted' && lead.stage !== 'won' && confirm('Η προσφορά εγκρίθηκε. Να μαρκαριστεί και το lead ως «Κερδήθηκε»;')) patch.stage = 'won';
+  if (data.status === 'rejected' && before.status !== 'rejected' && lead.stage !== 'lost' && confirm('Η προσφορά απορρίφθηκε. Να μαρκαριστεί και το lead ως «Χάθηκε»;')) patch.stage = 'lost';
+  if (Object.keys(patch).length) await q(sb.from('leads').update(patch).eq('id', lead.id));
+}
+
+async function viewOfferPrint(id) {
+  const [s, o] = await Promise.all([getSettings(), q(sb.from('offers').select('*').eq('id', id).maybeSingle())]);
+  if (!o) { location.hash = '#/offers'; return; }
+  const [items, client, contacts] = await Promise.all([
+    q(sb.from('offer_items').select('*').eq('offer_id', id).order('position')),
+    o.client_id ? q(sb.from('clients').select('*').eq('id', o.client_id).maybeSingle()) : null,
+    o.client_id ? q(sb.from('contacts').select('*').eq('client_id', o.client_id).order('created_at')) : [],
+  ]);
+  const t = offerTotals(items, o.discount_pct, o.vat_pct);
+  const accent = s.accent || '#ff5a1f';
+  const to = client ? client.name : (o.recipient || '');
+  const attn = contacts?.[0];
+  document.title = `${o.number} — ${o.title}`;
+  $app.innerHTML = `
+    <div class="print-bar no-print">
+      <a class="btn" href="#/offers/${o.id}">← Πίσω</a>
+      <span class="muted" style="font-size:14px">Στο παράθυρο εκτύπωσης διάλεξε «Αποθήκευση ως PDF»</span>
+      <button class="btn primary" id="print">Λήψη PDF</button>
+    </div>
+    <article class="doc" style="--doc-accent:${esc(accent)}">
+      <header class="doc-head">
+        <div>${s.logo ? `<img src="${s.logo}" class="doc-logo" alt="">` : `<div class="doc-word">${esc(s.name || 'Created.')}</div>`}</div>
+        <div class="doc-co">
+          ${s.legal_name ? `<b>${esc(s.legal_name)}</b><br>` : ''}
+          ${s.address ? esc(s.address) + '<br>' : ''}
+          ${s.vat_number ? `ΑΦΜ ${esc(s.vat_number)}${s.tax_office ? ' · ΔΟΥ ' + esc(s.tax_office) : ''}<br>` : ''}
+          ${[s.email, s.phone, s.website].filter(Boolean).map(esc).join(' · ')}
+        </div>
+      </header>
+      <section class="doc-title">
+        <div class="doc-kicker">Οικονομική προσφορά</div>
+        <h1>${esc(o.title)}</h1>
+        <div class="doc-meta">
+          <div><span>Προς</span><b>${esc(to || '—')}</b>${attn ? `<br>Υπ' όψιν: ${esc(attn.full_name)}${attn.role_title ? ', ' + esc(attn.role_title) : ''}` : ''}${client?.vat_number ? `<br>ΑΦΜ ${esc(client.vat_number)}` : ''}</div>
+          <div><span>Αριθμός</span><b>${esc(o.number)}</b></div>
+          <div><span>Ημερομηνία</span><b>${date(o.issue_date)}</b></div>
+          <div><span>Ισχύει έως</span><b>${date(o.valid_until)}</b></div>
+        </div>
+      </section>
+      ${o.intro ? `<p class="doc-intro">${esc(o.intro)}</p>` : ''}
+      <table class="doc-table">
+        <thead><tr><th style="width:52%">Υπηρεσία</th><th class="r">Ποσ.</th><th class="r">Τιμή μον.</th><th class="r">Σύνολο</th></tr></thead>
+        <tbody>${items.map((it) => `<tr><td><b>${esc(it.name)}</b>${it.description ? `<div class="doc-desc">${esc(it.description)}</div>` : ''}</td>
+          <td class="r">${num(it.qty).replace(/,00$/, '')}${it.unit ? ' ' + esc(it.unit) : ''}</td><td class="r">${eur(it.unit_price)}</td><td class="r">${eur(Number(it.qty) * Number(it.unit_price))}</td></tr>`).join('')}</tbody>
+      </table>
+      <div class="doc-totals">
+        <div><span>Υποσύνολο</span><span>${eur(t.subtotal)}</span></div>
+        ${t.discount ? `<div><span>Έκπτωση ${num(o.discount_pct)}%</span><span>−${eur(t.discount)}</span></div><div><span>Καθαρό</span><span>${eur(t.net)}</span></div>` : ''}
+        <div><span>ΦΠΑ ${num(o.vat_pct)}%</span><span>${eur(t.vat)}</span></div>
+        <div class="grand"><span>Σύνολο</span><span>${eur(t.total)}</span></div>
+      </div>
+      ${o.terms ? `<section class="doc-terms"><h3>Όροι</h3><p>${esc(o.terms)}</p></section>` : ''}
+      <section class="doc-sign">
+        <div><div class="line"></div>Υπογραφή · ${esc(s.name || "Created.")}</div>
+        <div><div class="line"></div>Αποδοχή πελάτη · Ημερομηνία</div>
+      </section>
+    </article>`;
+  document.getElementById('print').onclick = () => window.print();
 }
 
 // ---------------------------------------------------------------- team
