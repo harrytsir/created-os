@@ -14,6 +14,7 @@ const WEEKDAYS = ['Δευ', 'Τρί', 'Τετ', 'Πέμ', 'Παρ', 'Σάβ', '�
 
 export function createWork(ctx) {
   const { sb, state, isAdmin, esc, q, toast, shell, openModal, closeModal, options, formData, date, money } = ctx;
+  const startTimer = (...a) => ctx.startTimer?.(...a);
 
   const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
   const hm = (d) => new Date(d).toLocaleTimeString('el-GR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -158,7 +159,7 @@ export function createWork(ctx) {
       <div class="grid two">
         <div class="grid" style="align-content:start">
           <div class="card">
-            <div class="head" style="margin-bottom:8px"><h2 style="margin:0">Tasks <small class="muted">${done}/${tasks.length}</small></h2><button class="btn sm" id="add-task">+ Task</button></div>
+            <div class="head" style="margin-bottom:8px"><h2 style="margin:0">Tasks <small class="muted">${done}/${tasks.length}</small></h2><div style="display:flex;gap:6px">${isAdmin() ? '<button class="btn sm" id="apply-tpl">+ Από template</button>' : ''}<button class="btn sm" id="add-task">+ Task</button></div></div>
             <div class="progress" style="margin:0 0 10px"><span style="width:${tasks.length ? Math.round(done / tasks.length * 100) : 0}%"></span></div>
             <div id="tasks">${tasks.map((t) => taskRow(t, L)).join('') || '<div class="empty" style="padding:16px">Κανένα task ακόμα.</div>'}</div>
           </div>
@@ -185,6 +186,7 @@ export function createWork(ctx) {
     main.querySelector('#set-b')?.addEventListener('click', (e) => { e.preventDefault(); campaignForm(c, L); });
     const reload = () => viewCampaign(id);
     main.querySelector('#add-task').onclick = () => taskForm({}, L, { client_id: c.client_id, campaign_id: id }, reload);
+    main.querySelector('#apply-tpl')?.addEventListener('click', () => ctx.applyTemplate(c, reload));
     main.querySelector('#add-ev').onclick = () => eventForm({}, L, { client_id: c.client_id, campaign_id: id }, reload);
     bindTaskRows(main, tasks, L, reload);
     bindEventRows(main, events, L, reload);
@@ -225,10 +227,17 @@ export function createWork(ctx) {
           <label>Προτεραιότητα<select name="priority">${options(Object.entries(PRIORITY), v.priority)}</select></label></div>
         <label>Περιγραφή<textarea name="description" rows="4">${esc(v.description)}</textarea></label>
         <div class="modal-actions">${t.id && canDelete ? '<button type="button" class="btn danger" id="del">Διαγραφή</button>' : ''}
+          ${t.id ? '<button type="button" class="btn" id="tt">▶ Χρονόμετρο</button>' : ''}
           <div class="right"><button type="button" class="btn" data-close>Άκυρο</button><button class="btn primary">Αποθήκευση</button></div></div>
       </form>`, (m) => {
       const f = m.querySelector('#f');
       linkClientCampaign(f, L, v.campaign_id);
+      m.querySelector('#tt')?.addEventListener('click', async () => {
+        closeModal();
+        if (t.status === 'todo') await q(sb.from('tasks').update({ status: 'doing' }).eq('id', t.id));
+        await startTimer({ task_id: t.id, client_id: t.client_id, campaign_id: t.campaign_id, note: t.title });
+        onSaved?.();
+      });
       f.onsubmit = async (e) => {
         e.preventDefault();
         const data = formData(f);

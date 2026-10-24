@@ -33,7 +33,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .side { background: var(--surface); border-right: 1px solid var(--line); padding: 20px 14px; display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; height: 100vh; }
 .brand { font-weight: 700; font-size: 20px; letter-spacing: -.02em; padding: 4px 10px 18px; }
 .brand small { display: block; font-size: 11px; font-weight: 500; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
-.nav a { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; text-decoration: none; color: var(--muted); font-weight: 500; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; text-decoration: none; color: var(--muted); font-weight: 500; }
 .nav a:hover { background: var(--bg); color: var(--ink); }
 .nav a.active { background: var(--ink); color: var(--surface); }
 .nav a.soon { opacity: .45; pointer-events: none; }
@@ -280,3 +280,39 @@ label.inline input { width: auto; }
 .sec-body textarea { font-size: 14px; }
 .deck-grid { grid-template-columns: 1.6fr 1fr; }
 @media (max-width: 860px) { .deck-grid { grid-template-columns: 1fr; } }
+
+/* ---------- Phase 5 ---------- */
+.nav { flex: 1; min-height: 0; overflow-y: auto; }
+.nav .sep { margin: 6px 6px; }
+.nav a span:first-child { width: 16px; text-align: center; }
+#timer-slot { padding: 8px 0 4px; }
+.timer { width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 10px; border: 1px dashed var(--line); background: transparent; cursor: pointer; color: var(--muted); font-weight: 500; font-size: 14px; }
+.timer:hover { border-color: var(--ink); color: var(--ink); }
+.timer.on { border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); color: var(--ink); cursor: default; justify-content: space-between; }
+.timer.on b { font-size: 18px; font-variant-numeric: tabular-nums; display: block; line-height: 1.1; }
+.timer.on small { display: block; font-size: 12px; color: var(--muted); max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.day-block { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.day-block:last-child { border-bottom: 0; }
+.day-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); text-transform: capitalize; margin-bottom: 2px; }
+.day-block.today .day-head b { color: var(--ink); }
+.time-row { display: flex; gap: 12px; align-items: center; padding: 7px 0 7px 10px; border-left: 2px solid var(--line); margin: 4px 0; cursor: pointer; }
+.time-row:hover { border-left-color: var(--accent); }
+.time-row > b { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.live { color: var(--good); }
+.bar-row { margin: 10px 0; }
+.bar-lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; }
+.bar-row .progress { margin-top: 4px; }
+.notice { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); border: 1px solid var(--accent); border-radius: 10px; padding: 10px 14px; font-size: 14px; margin-bottom: 16px; }
+.attention h2 { margin-bottom: 4px; }
+.att-row { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); text-decoration: none; }
+.att-row:last-child { border-bottom: 0; }
+.att-row > span:nth-child(2) { flex: 1; min-width: 0; }
+.att-row small { display: block; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.att-ico { width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 22%, var(--surface)); display: grid; place-items: center; flex: none; font-size: 14px; }
+.tpl-row { display: grid; grid-template-columns: 1fr 64px 150px 110px auto; gap: 6px; margin-bottom: 6px; align-items: center; }
+@media (max-width: 560px) { .tpl-row { grid-template-columns: 1fr 60px auto; } .tpl-row select { grid-column: span 1; } }
+.tpl-preview { max-height: 240px; overflow: auto; }
+.rate-in { display: flex; align-items: center; gap: 4px; max-width: 110px; }
+.rate-in input { padding: 6px 8px; }
+details.card summary { cursor: pointer; font-weight: 600; }
+details.card[open] summary { margin-bottom: 8px; }

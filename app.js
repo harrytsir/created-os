@@ -2,6 +2,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createWork } from './work.js';
 import { createDecks } from './decksui.js';
+import { createGrowth } from './growth.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $app = document.getElementById('app');
@@ -107,11 +108,16 @@ const NAV = [
   ['leads', 'Leads', '◇', true],
   ['sep'],
   ['offers', 'Προσφορές', '▤', true],
+  ['decks', 'Παρουσιάσεις', '▶', true],
+  ['retainers', 'Retainers', '↻', true],
+  ['sep'],
   ['campaigns', 'Καμπάνιες', '✦'],
   ['calendar', 'Ημερολόγιο', '▦'],
   ['tasks', 'Tasks', '☑'],
-  ['decks', 'Παρουσιάσεις', '▶', true],
+  ['time', 'Χρόνος', '◷'],
   ['sep'],
+  ['profit', 'Κερδοφορία', '€', true],
+  ['templates', 'Templates', '⧉', true],
   ['team', 'Ομάδα', '◉', true],
   ['settings', 'Ρυθμίσεις', '⚙', true],
 ];
@@ -125,6 +131,7 @@ function shell(route, content) {
       <aside class="side" id="side">
         <div class="brand">Created<span class="dot">.</span><small>Operating System</small></div>
         <nav class="nav">${nav}</nav>
+        <div id="timer-slot"></div>
         <div class="me"><b>${esc(state.profile?.full_name)}</b>${isAdmin() ? 'Admin' : 'Συνεργάτης'} · <a href="#" id="logout">Αποσύνδεση</a></div>
       </aside>
       <div>
@@ -135,7 +142,8 @@ function shell(route, content) {
   const side = document.getElementById('side');
   document.getElementById('menu').onclick = (e) => { e.stopPropagation(); side.classList.toggle('open'); };
   side.querySelectorAll('.nav a').forEach((a) => a.addEventListener('click', () => side.classList.remove('open')));
-  document.getElementById('logout').onclick = async (e) => { e.preventDefault(); await sb.auth.signOut(); };
+  document.getElementById('logout').onclick = async (e) => { e.preventDefault(); state.running = undefined; await sb.auth.signOut(); };
+  growth().mountTimer(document.getElementById('timer-slot')).catch(console.error);
   return document.getElementById('main');
 }
 
@@ -143,7 +151,7 @@ function shell(route, content) {
 async function router() {
   if (!state.user) return;
   const [, route = 'dashboard', id, sub] = location.hash.split('/');
-  const adminOnly = ['leads', 'team', 'offers', 'settings', 'decks'];
+  const adminOnly = ['leads', 'team', 'offers', 'settings', 'decks', 'retainers', 'profit', 'templates'];
   if (adminOnly.includes(route) && !isAdmin()) return (location.hash = '#/dashboard');
   try {
     if (route === 'clients' && id) return await viewClient(id);
@@ -151,7 +159,7 @@ async function router() {
     if (route === 'offers' && id) return await viewOffer(id);
     if (route === 'campaigns' && id) return await viewCampaign(id);
     if (route === 'decks' && id) return await decks().viewDeck(id);
-    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam, offers: viewOffers, settings: viewSettings, campaigns: viewCampaigns, tasks: viewTasks, calendar: viewCalendar, decks: () => decks().viewDecks() };
+    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam, offers: viewOffers, settings: viewSettings, campaigns: viewCampaigns, tasks: viewTasks, calendar: viewCalendar, decks: () => decks().viewDecks(), time: () => growth().viewTime(), retainers: () => growth().viewRetainers(), profit: () => growth().viewProfit(), templates: () => growth().viewTemplates() };
     await (views[route] || viewDashboard)();
   } catch (e) { console.error(e); }
 }
@@ -159,7 +167,10 @@ window.addEventListener('hashchange', router);
 
 // ---------------------------------------------------------------- Φάση 3 (work.js)
 let W;
-const work = () => (W ??= createWork({ sb, state, isAdmin, esc, q, toast, shell, openModal, closeModal, options, formData, date, money }));
+const work = () => (W ??= createWork({ sb, state, isAdmin, esc, q, toast, shell, openModal, closeModal, options, formData, date, money,
+  startTimer: (p) => growth().startTimer(p), applyTemplate: (c, done) => growth().applyTemplate(c, done) }));
+let GR;
+const growth = () => (GR ??= createGrowth({ sb, state, isAdmin, esc, q, toast, shell, openModal, closeModal, options, formData, date, money }));
 function viewCampaigns() { return work().viewCampaigns(); }
 function viewCampaign(id) { return work().viewCampaign(id); }
 function viewTasks() { return work().viewTasks(); }
@@ -187,6 +198,7 @@ async function viewDashboard() {
       <div class="card"><div class="num">${money(won)}</div><div class="lbl">Κερδισμένα</div></div>
       <a class="card" href="#/offers" style="text-decoration:none"><div class="num">${sentOffers}</div><div class="lbl">Προσφορές σε αναμονή</div></a>` : ''}
     </div>
+    <div id="attention" style="margin-bottom:16px"></div>
     <div class="grid two" style="margin-bottom:16px" id="mywork"></div>
     <div class="grid ${isAdmin() ? 'two' : ''}">
       <div class="card"><h2>Πρόσφατοι πελάτες</h2>
@@ -196,6 +208,9 @@ async function viewDashboard() {
         ${open.slice(0, 6).map((l) => `<a class="list-row" href="#/leads" style="text-decoration:none"><span>${esc(l.title)}<br><small class="muted">${esc(l.company || '')}</small></span><span style="text-align:right"><span class="pill ${l.stage}">${STAGE[l.stage]}</span><br><small class="muted">${money(l.value)}</small></span></a>`).join('') || '<div class="empty">Κανένα ανοιχτό lead.</div>'}
       </div>` : ''}
     </div>`;
+  const att = await growth().attentionCard();
+  const attBox = main.querySelector('#attention');
+  if (attBox) { attBox.innerHTML = att; if (!att) attBox.remove(); }
   const mw = await work().myWorkCard();
   const box = main.querySelector('#mywork');
   if (box) { box.innerHTML = mw.html; mw.bind(box, viewDashboard); }
@@ -281,6 +296,7 @@ async function viewClient(id) {
   ]);
   const who = Object.fromEntries(profiles.map((p) => [p.id, p.full_name]));
   const campaignsCard = await work().clientCampaignsCard(id);
+  const retainersCard = isAdmin() ? await growth().clientRetainersCard(id) : '';
   const memberIds = new Set(members.map((m) => m.user_id));
   const collaborators = profiles.filter((p) => p.role === 'collaborator');
   const link = (u) => u ? `<a href="${esc(/^https?:/.test(u) ? u : 'https://' + u)}" target="_blank" rel="noopener">${esc(u)}</a>` : '—';
@@ -312,6 +328,7 @@ async function viewClient(id) {
             <span style="text-align:right;font-size:13px">${p.email ? `<a href="mailto:${esc(p.email)}">${esc(p.email)}</a>` : ''}<br>${p.phone ? `<a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>` : ''}</span></div>`).join('') || '<div class="empty">Καμία επαφή.</div>'}
         </div>
         ${campaignsCard}
+        ${retainersCard}
         ${isAdmin() ? `<div class="card"><div class="head" style="margin-bottom:6px"><h2 style="margin:0">Προσφορές</h2><button class="btn sm" id="add-offer">+ Προσφορά</button></div>
           ${offers.map((o) => `<a class="list-row" href="#/offers/${o.id}" style="text-decoration:none"><span><b>${esc(o.title)}</b><br><small class="muted">${esc(o.number)} · ${date(o.issue_date)}</small></span><span class="pill ${o.status}">${OFFER_STATUS[o.status]}</span></a>`).join('') || '<div class="empty" style="padding:16px">Καμία προσφορά.</div>'}
         </div>` : ''}
@@ -323,6 +340,7 @@ async function viewClient(id) {
 
   main.querySelector('#edit')?.addEventListener('click', () => clientForm(c));
   main.querySelector('#add-contact')?.addEventListener('click', () => contactForm(id));
+  if (isAdmin()) growth().bindClientRetainers(main, id, () => viewClient(id));
   main.querySelector('#add-camp')?.addEventListener('click', () => work().campaignForm({}, null, { client_id: id }));
   main.querySelector('#add-offer')?.addEventListener('click', () => { state.offerPrefill = { client_id: id }; location.hash = '#/offers/new'; });
   main.querySelectorAll('[data-contact]').forEach((el) => (el.onclick = () => contactForm(id, contacts.find((x) => x.id === el.dataset.contact))));
@@ -516,10 +534,13 @@ async function viewSettings() {
           <div><button class="btn primary">Αποθήκευση</button></div>
         </form>
       </div>
+      <div class="grid" style="align-self:start">
       <div class="card" style="align-self:start"><div class="head" style="margin-bottom:6px"><h2 style="margin:0">Κατάλογος υπηρεσιών</h2><button class="btn sm" id="add-svc">+ Υπηρεσία</button></div>
         <p class="sub" style="margin-top:0">Αυτές εμφανίζονται για γρήγορη προσθήκη στις προσφορές.</p>
         ${services.map((v) => `<div class="list-row" data-svc="${v.id}" style="cursor:pointer;${v.active ? '' : 'opacity:.5'}"><span><b>${esc(v.name)}</b><br><small class="muted">${esc(v.category || '')}${v.active ? '' : ' · ανενεργή'}</small></span>
           <span style="text-align:right;white-space:nowrap">${eur(v.price)}<br><small class="muted">/ ${esc(v.unit || '')}</small></span></div>`).join('') || '<div class="empty">Ο κατάλογος είναι άδειος.</div>'}
+      </div>
+      ${growth().siteFormCard()}
       </div>
     </div>`;
 
@@ -541,6 +562,7 @@ async function viewSettings() {
     toast('Τα στοιχεία αποθηκεύτηκαν');
   };
   main.querySelector('#add-svc').onclick = () => serviceForm();
+  growth().bindSiteForm(main);
   main.querySelectorAll('[data-svc]').forEach((el) => (el.onclick = () => serviceForm(services.find((v) => v.id === el.dataset.svc))));
 }
 
@@ -868,25 +890,29 @@ async function viewOfferPrint(id) {
 // ---------------------------------------------------------------- team
 async function viewTeam() {
   const main = shell('team', '<div class="empty">Φόρτωση…</div>');
-  const [profiles, members, clients] = await Promise.all([
+  const [profiles, members, clients, rates] = await Promise.all([
     q(sb.from('profiles').select('*').order('created_at')),
     q(sb.from('client_members').select('*')),
     q(sb.from('clients').select('id,name')),
+    growth().ratesMap(),
   ]);
   const cname = Object.fromEntries(clients.map((c) => [c.id, c.name]));
   main.innerHTML = `
     <div class="head"><div><h1>Ομάδα</h1><div class="sub">Οι συνεργάτες κάνουν εγγραφή από το link της εφαρμογής και μετά τους δίνεις πρόσβαση ανά πελάτη.</div></div>
       <button class="btn" id="copy">Αντιγραφή link εγγραφής</button></div>
     <div class="card table-wrap" style="padding:0"><table>
-      <thead><tr><th>Όνομα</th><th class="hide-sm">Email</th><th>Ρόλος</th><th class="hide-sm">Πελάτες</th></tr></thead>
+      <thead><tr><th>Όνομα</th><th class="hide-sm">Email</th><th>Ρόλος</th><th>Κόστος/ώρα</th><th class="hide-sm">Πελάτες</th></tr></thead>
       <tbody>${profiles.map((p) => `<tr style="cursor:default"><td><b>${esc(p.full_name)}</b></td><td class="hide-sm">${esc(p.email)}</td>
         <td>${p.id === state.user.id ? '<span class="pill">Admin (εσύ)</span>' : `<select data-role="${p.id}" style="width:auto">${options([['collaborator', 'Συνεργάτης'], ['admin', 'Admin']], p.role)}</select>`}</td>
+        <td><div class="rate-in"><input type="number" step="0.5" min="0" data-rate="${p.id}" value="${esc(rates[p.id] ?? '')}" placeholder="0"><span>€</span></div></td>
         <td class="hide-sm">${p.role === 'admin' ? '<span class="muted">Όλοι</span>' : esc(members.filter((m) => m.user_id === p.id).map((m) => cname[m.client_id]).join(', ') || '—')}</td></tr>`).join('')}</tbody>
     </table></div>`;
   main.querySelector('#copy').onclick = async () => {
     try { await navigator.clipboard.writeText(location.origin + location.pathname); toast('Το link αντιγράφηκε'); }
     catch { prompt('Αντέγραψε το link:', location.origin + location.pathname); }
   };
+  main.querySelectorAll('[data-rate]').forEach((inp) => (inp.onchange = () => growth().setRate(inp.dataset.rate, inp.value)));
+  main.querySelector('.sub').insertAdjacentHTML('beforeend', ' Το κόστος/ώρα (τι σου κοστίζει η ώρα κάθε μέλους) χρησιμοποιείται στην Κερδοφορία και το βλέπεις μόνο εσύ.');
   main.querySelectorAll('[data-role]').forEach((s) => (s.onchange = async () => {
     if (s.value === 'admin' && !confirm('Ο admin βλέπει όλους τους πελάτες, τα leads και τις τιμές. Συνέχεια;')) { s.value = 'collaborator'; return; }
     await q(sb.from('profiles').update({ role: s.value }).eq('id', s.dataset.role)); toast('Ο ρόλος άλλαξε'); viewTeam();
@@ -903,5 +929,5 @@ sb.auth.onAuthStateChange(async (_event, session) => {
   if (uid && uid === state.user?.id) return; // token refresh
   state.user = session?.user || null;
   if (!state.user) { state.profile = null; return renderAuth(); }
-  setTimeout(async () => { await loadProfile(); router(); }, 0);
+  setTimeout(async () => { await loadProfile(); state.running = undefined; await router(); if (isAdmin()) growth().generateRecurring().then((n) => { if (n && location.hash.match(/^#\/(tasks|dashboard)?$/) ) router(); }); }, 0);
 });
