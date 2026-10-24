@@ -1,5 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { createWork } from './work.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $app = document.getElementById('app');
@@ -105,9 +106,9 @@ const NAV = [
   ['leads', 'Leads', '◇', true],
   ['sep'],
   ['offers', 'Προσφορές', '▤', true],
-  ['campaigns', 'Καμπάνιες', '✦', false, true],
-  ['calendar', 'Ημερολόγιο', '▦', false, true],
-  ['tasks', 'Tasks', '☑', false, true],
+  ['campaigns', 'Καμπάνιες', '✦'],
+  ['calendar', 'Ημερολόγιο', '▦'],
+  ['tasks', 'Tasks', '☑'],
   ['decks', 'Παρουσιάσεις', '▶', true, true],
   ['sep'],
   ['team', 'Ομάδα', '◉', true],
@@ -147,11 +148,20 @@ async function router() {
     if (route === 'clients' && id) return await viewClient(id);
     if (route === 'offers' && id && sub === 'pdf') return await viewOfferPrint(id);
     if (route === 'offers' && id) return await viewOffer(id);
-    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam, offers: viewOffers, settings: viewSettings };
+    if (route === 'campaigns' && id) return await viewCampaign(id);
+    const views = { dashboard: viewDashboard, clients: viewClients, leads: viewLeads, team: viewTeam, offers: viewOffers, settings: viewSettings, campaigns: viewCampaigns, tasks: viewTasks, calendar: viewCalendar };
     await (views[route] || viewDashboard)();
   } catch (e) { console.error(e); }
 }
 window.addEventListener('hashchange', router);
+
+// ---------------------------------------------------------------- Φάση 3 (work.js)
+let W;
+const work = () => (W ??= createWork({ sb, state, isAdmin, esc, q, toast, shell, openModal, closeModal, options, formData, date, money }));
+function viewCampaigns() { return work().viewCampaigns(); }
+function viewCampaign(id) { return work().viewCampaign(id); }
+function viewTasks() { return work().viewTasks(); }
+function viewCalendar() { return work().viewCalendar(); }
 
 // ---------------------------------------------------------------- dashboard
 async function viewDashboard() {
@@ -173,6 +183,7 @@ async function viewDashboard() {
       <div class="card"><div class="num">${money(won)}</div><div class="lbl">Κερδισμένα</div></div>
       <a class="card" href="#/offers" style="text-decoration:none"><div class="num">${sentOffers}</div><div class="lbl">Προσφορές σε αναμονή</div></a>` : ''}
     </div>
+    <div class="grid two" style="margin-bottom:16px" id="mywork"></div>
     <div class="grid ${isAdmin() ? 'two' : ''}">
       <div class="card"><h2>Πρόσφατοι πελάτες</h2>
         ${clients.slice(0, 6).map((c) => `<a class="list-row" href="#/clients/${c.id}" style="text-decoration:none"><span>${esc(c.name)}</span><span class="pill ${c.status}">${CLIENT_STATUS[c.status]}</span></a>`).join('') || '<div class="empty">Δεν υπάρχουν ακόμα πελάτες.</div>'}
@@ -181,6 +192,9 @@ async function viewDashboard() {
         ${open.slice(0, 6).map((l) => `<a class="list-row" href="#/leads" style="text-decoration:none"><span>${esc(l.title)}<br><small class="muted">${esc(l.company || '')}</small></span><span style="text-align:right"><span class="pill ${l.stage}">${STAGE[l.stage]}</span><br><small class="muted">${money(l.value)}</small></span></a>`).join('') || '<div class="empty">Κανένα ανοιχτό lead.</div>'}
       </div>` : ''}
     </div>`;
+  const mw = await work().myWorkCard();
+  const box = main.querySelector('#mywork');
+  if (box) { box.innerHTML = mw.html; mw.bind(box, viewDashboard); }
 }
 
 // ---------------------------------------------------------------- clients
@@ -262,6 +276,7 @@ async function viewClient(id) {
     isAdmin() ? q(sb.from('offers').select('id,number,title,status,issue_date').eq('client_id', id).order('created_at', { ascending: false })) : [],
   ]);
   const who = Object.fromEntries(profiles.map((p) => [p.id, p.full_name]));
+  const campaignsCard = await work().clientCampaignsCard(id);
   const memberIds = new Set(members.map((m) => m.user_id));
   const collaborators = profiles.filter((p) => p.role === 'collaborator');
   const link = (u) => u ? `<a href="${esc(/^https?:/.test(u) ? u : 'https://' + u)}" target="_blank" rel="noopener">${esc(u)}</a>` : '—';
@@ -292,6 +307,7 @@ async function viewClient(id) {
           ${contacts.map((p) => `<div class="list-row" ${isAdmin() ? `data-contact="${p.id}" style="cursor:pointer"` : ''}><span><b>${esc(p.full_name)}</b><br><small class="muted">${esc(p.role_title || '')}</small></span>
             <span style="text-align:right;font-size:13px">${p.email ? `<a href="mailto:${esc(p.email)}">${esc(p.email)}</a>` : ''}<br>${p.phone ? `<a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>` : ''}</span></div>`).join('') || '<div class="empty">Καμία επαφή.</div>'}
         </div>
+        ${campaignsCard}
         ${isAdmin() ? `<div class="card"><div class="head" style="margin-bottom:6px"><h2 style="margin:0">Προσφορές</h2><button class="btn sm" id="add-offer">+ Προσφορά</button></div>
           ${offers.map((o) => `<a class="list-row" href="#/offers/${o.id}" style="text-decoration:none"><span><b>${esc(o.title)}</b><br><small class="muted">${esc(o.number)} · ${date(o.issue_date)}</small></span><span class="pill ${o.status}">${OFFER_STATUS[o.status]}</span></a>`).join('') || '<div class="empty" style="padding:16px">Καμία προσφορά.</div>'}
         </div>` : ''}
@@ -303,6 +319,7 @@ async function viewClient(id) {
 
   main.querySelector('#edit')?.addEventListener('click', () => clientForm(c));
   main.querySelector('#add-contact')?.addEventListener('click', () => contactForm(id));
+  main.querySelector('#add-camp')?.addEventListener('click', () => work().campaignForm({}, null, { client_id: id }));
   main.querySelector('#add-offer')?.addEventListener('click', () => { state.offerPrefill = { client_id: id }; location.hash = '#/offers/new'; });
   main.querySelectorAll('[data-contact]').forEach((el) => (el.onclick = () => contactForm(id, contacts.find((x) => x.id === el.dataset.contact))));
   main.querySelector('#note-form').onsubmit = async (e) => {
